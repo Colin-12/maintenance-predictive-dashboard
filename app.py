@@ -4,11 +4,12 @@ import numpy as np
 import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
+import requests # <-- La nouveauté indispensable !
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Maintenance Prédictive IA", page_icon="⚙️", layout="wide")
 
-# --- CHARGEMENT DES MODÈLES (Mis en cache pour la rapidité) ---
+# --- CHARGEMENT DES MODÈLES (Pour l'explicabilité du graphique) ---
 @st.cache_resource
 def load_models():
     preprocessor = joblib.load('preprocessor.joblib')
@@ -22,13 +23,13 @@ st.title("⚙️ Dashboard de Maintenance Prédictive Industrielle")
 st.markdown("""
 Bienvenue sur l'outil d'aide à la décision. Saisissez les données des capteurs de la machine en temps réel 
 pour estimer la probabilité d'une panne dans les 24 prochaines heures.
-*Modèle propulsé par XGBoost (Recall : 0.95)*
+*Architecture Cloud : Interface Streamlit connectée à une API REST FastAPI (XGBoost)*
 """)
 
 st.divider()
 
 # --- INTERFACE UTILISATEUR (Sidebar pour le scénario) ---
-st.sidebar.header("📊 Saisir un scénario (Capteurs)")
+st.sidebar.header("📊 Saisir un scénario")
 
 def user_input_features():
     vibration = st.sidebar.slider("Vibration (RMS)", 0.0, 10.0, 2.5, 0.1)
@@ -52,31 +53,54 @@ input_df = user_input_features()
 st.subheader("Données machine actuelles")
 st.write(input_df)
 
-# --- PRÉDICTION ---
-# Application du preprocessor
-input_prepared = preprocessor.transform(input_df)
-
-# Prédiction
-prediction = model.predict(input_prepared)
-prediction_proba = model.predict_proba(input_prepared)[0][1] # Probabilité de la classe 1 (Panne)
-
+# --- PRÉDICTION VIA L'API REST ---
 st.divider()
-st.subheader("🚨 Résultat de l'analyse IA")
+st.subheader("🚨 Résultat de l'analyse IA (via API)")
 
-col1, col2 = st.columns(2)
+# L'URL exacte de ton API sur Render
+API_URL = "https://api-maintenance-predictive.onrender.com/predict"
 
-with col1:
-    st.metric(label="Probabilité de panne (24h)", value=f"{prediction_proba * 100:.1f} %")
-    if prediction[0] == 1:
-        st.error("⚠️ ALERTE : Risque élevé de panne détecté. Intervention recommandée.")
+# On prépare le "colis" (payload) à envoyer à l'API
+payload = {
+    "vibration_rms": float(input_df["vibration_rms"].iloc[0]),
+    "temperature_motor": float(input_df["temperature_motor"].iloc[0]),
+    "rpm": int(input_df["rpm"].iloc[0]),
+    "pressure_level": float(input_df["pressure_level"].iloc[0]),
+    "operating_mode": str(input_df["operating_mode"].iloc[0])
+}
+
+try:
+    # On frappe à la porte de l'API avec nos données
+    response = requests.post(API_URL, json=payload)
+    
+    # Si l'API répond avec succès (Code 200)
+    if response.status_code == 200:
+        resultat_api = response.json()
+        
+        # Récupération des résultats
+        prediction_class = resultat_api["prediction_class"]
+        proba_pourcentage = resultat_api["failure_probability_percent"]
+        proba_decimale = proba_pourcentage / 100.0
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric(label="Probabilité de panne (24h)", value=f"{proba_pourcentage:.1f} %")
+            if prediction_class == 1:
+                st.error("⚠️ ALERTE : Risque élevé de panne détecté. Intervention recommandée.")
+            else:
+                st.success("✅ Machine saine. Aucun risque immédiat détecté.")
+
+        with col2:
+            st.progress(float(proba_decimale))
+            st.caption("Jauge de risque (0% = Sain, 100% = Panne imminente)")
     else:
-        st.success("✅ Machine saine. Aucun risque immédiat détecté.")
+        st.error(f"Erreur de l'API : Code {response.status_code}")
 
-with col2:
-    st.progress(float(prediction_proba))
-    st.caption("Jauge de risque (0% = Sain, 100% = Panne imminente)")
+except Exception as e:
+    st.error(f"Impossible de joindre l'API sur Render. Détail de l'erreur : {e}")
 
-# --- EXPLICABILITÉ (Feature Importance globale) ---
+# --- EXPLICABILITÉ (Feature Importance) ---
 st.divider()
 st.subheader("🧠 Pourquoi le modèle prend-il cette décision ?")
 st.markdown("Voici l'importance globale des capteurs apprise par le modèle XGBoost :")
